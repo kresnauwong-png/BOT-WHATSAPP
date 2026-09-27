@@ -1,0 +1,16 @@
+{
+  "name": "wa-downloader-bot",
+  "version": "1.0.0",
+  "description": "Bot WhatsApp yang terhubung ke API downloader multi-platform (TikTok, Instagram, Facebook, Pinterest, Spotify)",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "axios": "^1.7.7",
+    "pino": "^9.4.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
