@@ -11,23 +11,46 @@ const config = require("./config");
 const { fetchDownload, detectPlatform } = require("./downloaderApi");
 const rateLimiter = require("./rateLimiter");
 
+// Isi nomor WA bot di sini (format: 628xxxxxxxxxx, tanpa "+" tanpa spasi)
+// atau set via environment variable PHONE_NUMBER di Railway (Settings > Variables).
+// Kalau diisi, bot akan pakai kode pairing (lebih stabil di hosting cloud)
+// daripada QR code yang sering gagal kalau di-screenshot dari log.
+const PHONE_NUMBER = process.env.PHONE_NUMBER || "";
+
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState("./session");
   const { version } = await fetchLatestBaileysVersion();
+
+  const usePairingCode = Boolean(PHONE_NUMBER) && !state.creds.registered;
 
   const sock = makeWASocket({
     version,
     auth: state,
     logger: pino({ level: "silent" }),
-    // printQRInTerminal dihapus di versi baru baileys, kita handle manual di bawah
+    printQRInTerminal: false,
   });
+
+  if (usePairingCode) {
+    setTimeout(async () => {
+      try {
+        const code = await sock.requestPairingCode(PHONE_NUMBER);
+        console.log("=====================================");
+        console.log("KODE PAIRING KAMU:", code);
+        console.log("Buka WhatsApp > Perangkat Tertaut >");
+        console.log("Tautkan dengan nomor telepon > masukkan kode ini");
+        console.log("=====================================");
+      } catch (err) {
+        console.error("Gagal minta kode pairing:", err.message);
+      }
+    }, 3000);
+  }
 
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("connection.update", (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    if (qr) {
+    if (qr && !usePairingCode) {
       console.log("Scan QR berikut dengan WhatsApp:");
       qrcode.generate(qr, { small: true });
     }
