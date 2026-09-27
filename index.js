@@ -49,7 +49,7 @@ async function startBot() {
         console.log("Logged out. Hapus folder ./session lalu scan ulang.");
       }
     } else if (connection === "open") {
-      console.log("Bot WhatsApp tersambung ✅");
+      console.log("[OK] Bot WhatsApp tersambung");
     }
   });
 
