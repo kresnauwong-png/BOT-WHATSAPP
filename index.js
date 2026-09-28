@@ -4,6 +4,8 @@ const {
   DisconnectReason,
   fetchLatestBaileysVersion,
 } = require("@whiskeysockets/baileys");
+const fs = require("fs");
+const path = require("path");
 const pino = require("pino");
 const qrcode = require("qrcode-terminal");
 
@@ -19,6 +21,19 @@ const PHONE_NUMBER = (process.env.PHONE_NUMBER || PHONE_NUMBER_MANUAL).replace(
   /[^0-9]/g,
   ""
 );
+
+// Hapus isi folder session (bukan folder-nya, karena bisa jadi Volume Railway)
+function clearSession() {
+  const dir = path.join(__dirname, "session");
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      fs.rmSync(path.join(dir, f), { recursive: true, force: true });
+    }
+    console.log("[INFO] Sesi lama dibersihkan.");
+  } catch (err) {
+    console.error("[WARN] Gagal membersihkan sesi:", err.message);
+  }
+}
 
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState("./session");
@@ -86,7 +101,9 @@ async function startBot() {
       if (shouldReconnect) {
         setTimeout(startBot, 5000);
       } else {
-        console.log("Logged out. Hapus folder ./session lalu scan ulang.");
+        console.log("[INFO] WhatsApp ter-logout. Membersihkan sesi dan minta kode pairing baru...");
+        clearSession();
+        setTimeout(startBot, 3000);
       }
     } else if (connection === "open") {
       console.log("[OK] Bot WhatsApp tersambung");
