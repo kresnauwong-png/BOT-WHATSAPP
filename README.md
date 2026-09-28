@@ -12,12 +12,11 @@ Bot WhatsApp berbasis [Baileys](https://github.com/WhiskeySockets/Baileys) yang 
 
 ## Command
 
-- `.menu` — daftar command
-- `.tiktok <link>`
-- `.instagram <link>`
-- `.facebook <link>`
-- `.pinterest <link>`
-- `.spotify <link>`
+- `.menu` — daftar command, `.ping` — cek bot aktif
+- `.tiktok` `.instagram` `.facebook` `.pinterest` `.spotify` + `<link>`
+- `.upscale <2k|4k|8k>` — kirim/balas foto atau video
+- `.fakeff` / `.fakeml` — `<nama> | <uid> | <level>` (uid & level opsional)
+- Admin: `.status`, `.ban <nomor>`, `.unban <nomor>` (isi `ADMIN_NUMBERS` di config.js)
 
 Sesuaikan `downloaderApi.js` (path endpoint) dan bagian parsing hasil di `index.js` dengan bentuk response API asli kamu.
 

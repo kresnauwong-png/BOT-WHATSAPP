@@ -8,8 +8,7 @@ const pino = require("pino");
 const qrcode = require("qrcode-terminal");
 
 const config = require("./config");
-const { fetchDownload, detectPlatform } = require("./downloaderApi");
-const rateLimiter = require("./rateLimiter");
+const { handleMessage } = require("./commands");
 
 // ISI NOMOR WA BOT DI BAWAH INI (format: 628xxxxxxxxxx, tanpa "+" dan tanpa spasi).
 // Contoh: const PHONE_NUMBER_MANUAL = "6281234567890";
@@ -95,103 +94,22 @@ async function startBot() {
   });
 
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
+    console.log("[DEBUG] pesan masuk, type:", type, "jumlah:", messages.length);
     if (type !== "notify") return;
 
-    const msg = messages[0];
-    if (!msg?.message || msg.key.fromMe) return;
-
-    const from = msg.key.remoteJid;
-    const text =
-      msg.message.conversation ||
-      msg.message.extendedTextMessage?.text ||
-      "";
-
-    if (!text.startsWith(config.PREFIX)) return;
-
-    const body = text.slice(config.PREFIX.length).trim();
-    const [command, ...args] = body.split(/\s+/);
-    const url = args[0];
-
-    // ===== Proteksi rate limit (menjaga akun tetap wajar) =====
-    if (!rateLimiter.canUserRequest(from)) {
-      await safeReply(
-        sock,
-        from,
-        "Tunggu sebentar ya, terlalu banyak permintaan dalam 1 menit."
-      );
-      return;
-    }
-    if (!rateLimiter.canSendGlobally()) {
-      console.log("Batas kirim global tercapai, pesan ditunda.");
-      return;
-    }
-
-    const knownCommands = ["tiktok", "ig", "instagram", "fb", "facebook", "pin", "pinterest", "spotify"];
-
-    if (command === "menu") {
-      await safeReply(
-        sock,
-        from,
-        [
-          "*Menu Bot Downloader*",
-          "",
-          `${config.PREFIX}tiktok <link>`,
-          `${config.PREFIX}instagram <link>`,
-          `${config.PREFIX}facebook <link>`,
-          `${config.PREFIX}pinterest <link>`,
-          `${config.PREFIX}spotify <link>`,
-        ].join("\n")
-      );
-      return;
-    }
-
-    if (!knownCommands.includes(command)) return;
-
-    if (!url) {
-      await safeReply(sock, from, `Format salah. Contoh: ${config.PREFIX}${command} https://...`);
-      return;
-    }
-
-    const platform =
-      detectPlatform(url) ||
-      { ig: "instagram", fb: "facebook", pin: "pinterest" }[command] ||
-      command;
-
-    try {
-      rateLimiter.recordSend(from);
-      if (config.SHOW_TYPING_INDICATOR) {
-        await sock.sendPresenceUpdate("composing", from);
+    for (const msg of messages) {
+      if (!msg?.message) continue;
+      if (msg.key.fromMe) {
+        console.log("[DEBUG] diabaikan: pesan dari nomor bot sendiri (tes pakai nomor lain)");
+        continue;
       }
-
-      const result = await fetchDownload(platform, url);
-
-      // Jeda acak sebelum membalas — perilaku lebih natural, tidak instan
-      await rateLimiter.randomDelay();
-
-      // Sesuaikan bagian ini dengan bentuk response API kamu.
-      // Contoh asumsi: { success: true, mediaUrl: "...", caption: "..." }
-      if (result?.mediaUrl) {
-        await sock.sendMessage(from, {
-          video: { url: result.mediaUrl },
-          caption: result.caption || "Berhasil diunduh ✅",
-        });
-      } else {
-        await safeReply(sock, from, "Media tidak ditemukan atau link tidak valid.");
+      try {
+        await handleMessage(sock, msg);
+      } catch (err) {
+        console.error("[ERROR] handler:", err.message);
       }
-    } catch (err) {
-      console.error("Error saat fetch API:", err.message);
-      await safeReply(
-        sock,
-        from,
-        "Terjadi kesalahan saat mengambil media. Coba lagi beberapa saat."
-      );
     }
   });
-}
-
-async function safeReply(sock, to, text) {
-  await rateLimiter.randomDelay();
-  await sock.sendMessage(to, { text });
 }
 
 startBot().catch((err) => console.error("Gagal start bot:", err));

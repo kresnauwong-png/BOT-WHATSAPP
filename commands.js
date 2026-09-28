@@ -1,0 +1,290 @@
+const { downloadMediaMessage } = require("@whiskeysockets/baileys");
+const pino = require("pino");
+const config = require("./config");
+const api = require("./downloaderApi");
+const rateLimiter = require("./rateLimiter");
+
+const P = config.PREFIX;
+const startedAt = Date.now();
+const banned = new Set(); // nomor yang diblokir admin (hilang saat bot restart)
+const logger = pino({ level: "silent" });
+
+const DEFAULT_TYPE = {
+  tiktok: "video",
+  instagram: "video",
+  facebook: "video",
+  pinterest: "image",
+  spotify: "audio",
+};
+
+// ---------- Helper ----------
+const digits = (jid = "") => jid.split("@")[0].split(":")[0].replace(/\D/g, "");
+
+function unwrap(m) {
+  if (!m) return m;
+  return (
+    m.ephemeralMessage?.message ||
+    m.viewOnceMessage?.message ||
+    m.viewOnceMessageV2?.message ||
+    m.documentWithCaptionMessage?.message ||
+    m
+  );
+}
+
+function getText(c) {
+  return (
+    c.conversation ||
+    c.extendedTextMessage?.text ||
+    c.imageMessage?.caption ||
+    c.videoMessage?.caption ||
+    ""
+  );
+}
+
+// Cari foto/video: di pesan itu sendiri, atau di pesan yang dibalas
+function findMedia(msg, content) {
+  const own = content.imageMessage || content.videoMessage;
+  if (own) {
+    return {
+      waMsg: { key: msg.key, message: content },
+      kind: content.imageMessage ? "image" : "video",
+      mime: own.mimetype,
+      size: Number(String(own.fileLength || 0)),
+    };
+  }
+  const ctx = content.extendedTextMessage?.contextInfo;
+  const quoted = unwrap(ctx?.quotedMessage);
+  const q = quoted?.imageMessage || quoted?.videoMessage;
+  if (q) {
+    return {
+      waMsg: {
+        key: { remoteJid: msg.key.remoteJid, id: ctx.stanzaId, participant: ctx.participant },
+        message: quoted,
+      },
+      kind: quoted.imageMessage ? "image" : "video",
+      mime: q.mimetype,
+      size: Number(String(q.fileLength || 0)),
+    };
+  }
+  return null;
+}
+
+async function reply(ctx, text) {
+  await rateLimiter.randomDelay();
+  await ctx.sock.sendMessage(ctx.from, { text }, { quoted: ctx.msg });
+}
+
+async function sendUrlMedia(ctx, item, caption) {
+  await rateLimiter.randomDelay();
+  let content;
+  if (item.type === "video") content = { video: { url: item.url }, caption };
+  else if (item.type === "audio") content = { audio: { url: item.url }, mimetype: "audio/mpeg" };
+  else content = { image: { url: item.url }, caption };
+  await ctx.sock.sendMessage(ctx.from, content, { quoted: ctx.msg });
+}
+
+async function sendBuffer(ctx, buffer, mime, caption) {
+  await rateLimiter.randomDelay();
+  let content;
+  if (mime.startsWith("video/")) content = { video: buffer, mimetype: mime, caption };
+  else if (mime.startsWith("audio/")) content = { audio: buffer, mimetype: mime };
+  else content = { image: buffer, caption };
+  await ctx.sock.sendMessage(ctx.from, content, { quoted: ctx.msg });
+}
+
+// Kirim hasil API (JSON berisi link, atau file langsung)
+async function deliver(ctx, result, defaultType, defaultCaption) {
+  if (result.kind === "binary") {
+    return sendBuffer(ctx, result.buffer, result.mime, defaultCaption);
+  }
+  const { items, caption } = api.extractMedia(result.data, defaultType);
+  if (!items.length) {
+    return reply(ctx, "Media tidak ditemukan atau link tidak valid.");
+  }
+  for (let i = 0; i < items.length; i++) {
+    await sendUrlMedia(ctx, items[i], i === 0 ? caption || defaultCaption : undefined);
+  }
+}
+
+// Pembungkus: cek batas permintaan, status mengetik, dan tangani error
+async function work(ctx, fn) {
+  if (!rateLimiter.canUserRequest(ctx.sender)) {
+    return reply(ctx, "Tunggu sebentar ya, terlalu banyak permintaan dalam 1 menit.");
+  }
+  if (!rateLimiter.canSendGlobally()) {
+    console.log("[WARN] Batas kirim global tercapai, pesan ditunda.");
+    return;
+  }
+  rateLimiter.recordSend(ctx.sender);
+  try {
+    if (config.SHOW_TYPING_INDICATOR) await ctx.sock.sendPresenceUpdate("composing", ctx.from);
+    await fn();
+  } catch (err) {
+    console.error("[ERROR]", ctx.command, err.message);
+    await reply(ctx, "Terjadi kesalahan saat memproses. Coba lagi beberapa saat.");
+  } finally {
+    try {
+      await ctx.sock.sendPresenceUpdate("paused", ctx.from);
+    } catch {}
+  }
+}
+
+// ---------- Command ----------
+async function cmdMenu(ctx) {
+  const lines = [
+    "*MENU BOT*",
+    "",
+    "*Downloader*",
+    `${P}tiktok <link>`,
+    `${P}instagram <link>`,
+    `${P}facebook <link>`,
+    `${P}pinterest <link>`,
+    `${P}spotify <link>`,
+    "",
+    "*Tools*",
+    `${P}upscale <2k|4k|8k>`,
+    "(kirim foto/video dengan caption itu, atau balas foto/video)",
+    `${P}fakeff <nama> | <uid> | <level>`,
+    `${P}fakeml <nama> | <uid> | <level>`,
+    "(uid dan level boleh dikosongkan)",
+    "",
+    "*Lainnya*",
+    `${P}ping`,
+  ];
+  if (ctx.isAdmin) {
+    lines.push("", "*Admin*", `${P}status`, `${P}ban <nomor>`, `${P}unban <nomor>`);
+  }
+  await reply(ctx, lines.join("\n"));
+}
+
+async function cmdPing(ctx) {
+  await reply(ctx, "Pong! Bot aktif.");
+}
+
+async function runDownload(ctx, platform) {
+  const url = ctx.args[0];
+  if (!url) return reply(ctx, `Format salah.\nContoh: ${P}${ctx.command} https://...`);
+  const target = api.detectPlatform(url) || platform;
+  await work(ctx, async () => {
+    const result = await api.fetchDownload(target, url);
+    await deliver(ctx, result, DEFAULT_TYPE[target] || "video", "Berhasil diunduh");
+  });
+}
+
+async function cmdUpscale(ctx) {
+  const scale = (ctx.args[0] || "4k").toLowerCase();
+  if (!["2k", "4k", "8k"].includes(scale)) {
+    return reply(ctx, `Pilihan resolusi: 2k, 4k, atau 8k.\nContoh: ${P}upscale 8k`);
+  }
+  const media = findMedia(ctx.msg, ctx.content);
+  if (!media) {
+    return reply(
+      ctx,
+      `Kirim foto/video dengan caption ${P}upscale ${scale}, atau balas foto/video dengan ${P}upscale ${scale}.`
+    );
+  }
+  if (media.size > config.MAX_UPLOAD_MB * 1024 * 1024) {
+    return reply(ctx, `File terlalu besar. Maksimal ${config.MAX_UPLOAD_MB} MB.`);
+  }
+  await work(ctx, async () => {
+    await reply(ctx, `Sedang diproses ke ${scale.toUpperCase()}, mohon tunggu...`);
+    const buffer = await downloadMediaMessage(
+      media.waMsg,
+      "buffer",
+      {},
+      { logger, reuploadRequest: ctx.sock.updateMediaMessage }
+    );
+    const result = await api.upscaleMedia(buffer, media.mime, scale);
+    await deliver(ctx, result, media.kind, `Upscale ${scale.toUpperCase()} selesai`);
+  });
+}
+
+async function cmdFakeLobby(ctx, game) {
+  const [name, uid, level] = ctx.args.join(" ").split("|").map((s) => s.trim());
+  if (!name) {
+    return reply(
+      ctx,
+      `Contoh:\n${P}${ctx.command} Nama Kamu\n${P}${ctx.command} Nama Kamu | 123456789 | 70`
+    );
+  }
+  const params = { name };
+  if (uid) params.uid = uid;
+  if (level) params.level = level;
+  await work(ctx, async () => {
+    const result = await api.fakeLobby(game, params);
+    await deliver(ctx, result, "image", "Selesai");
+  });
+}
+
+async function cmdStatus(ctx) {
+  const sec = Math.floor((Date.now() - startedAt) / 1000);
+  const uptime = `${Math.floor(sec / 3600)} jam ${Math.floor((sec % 3600) / 60)} menit`;
+  await reply(
+    ctx,
+    [
+      "*STATUS BOT*",
+      `Aktif selama: ${uptime}`,
+      `Nomor diblokir: ${banned.size}`,
+      `API: ${config.API_BASE_URL}`,
+    ].join("\n")
+  );
+}
+
+async function cmdBan(ctx, ban) {
+  const num = digits(ctx.args[0] || "");
+  if (!num) return reply(ctx, `Contoh: ${P}${ctx.command} 6281234567890`);
+  if (ban) banned.add(num);
+  else banned.delete(num);
+  await reply(ctx, ban ? `Nomor ${num} diblokir.` : `Blokir nomor ${num} dibuka.`);
+}
+
+// ---------- Daftar command ----------
+const routes = new Map();
+function add(names, run, opts = {}) {
+  for (const n of names) routes.set(n, { run, ...opts });
+}
+add(["menu", "help"], cmdMenu);
+add(["ping"], cmdPing);
+add(["tiktok", "tt"], (c) => runDownload(c, "tiktok"));
+add(["instagram", "ig"], (c) => runDownload(c, "instagram"));
+add(["facebook", "fb"], (c) => runDownload(c, "facebook"));
+add(["pinterest", "pin"], (c) => runDownload(c, "pinterest"));
+add(["spotify", "sp"], (c) => runDownload(c, "spotify"));
+add(["upscale", "hd"], cmdUpscale);
+add(["fakeff", "ffl"], (c) => cmdFakeLobby(c, "ff"));
+add(["fakeml", "mll"], (c) => cmdFakeLobby(c, "ml"));
+add(["status"], cmdStatus, { admin: true });
+add(["ban"], (c) => cmdBan(c, true), { admin: true });
+add(["unban"], (c) => cmdBan(c, false), { admin: true });
+
+// ---------- Pintu masuk ----------
+async function handleMessage(sock, msg) {
+  const from = msg.key.remoteJid;
+  if (!from || from === "status@broadcast") return;
+
+  const content = unwrap(msg.message);
+  const text = getText(content);
+  const sender = msg.key.participant || from;
+
+  console.log("[DEBUG] dari:", sender, "| teks:", text.slice(0, 80));
+
+  if (!text.startsWith(P)) {
+    console.log("[DEBUG] diabaikan: teks tidak diawali prefix", P);
+    return;
+  }
+  if (banned.has(digits(sender))) return;
+
+  const [command, ...args] = text.slice(P.length).trim().split(/\s+/);
+  const route = routes.get((command || "").toLowerCase());
+  if (!route) return;
+
+  const isAdmin = config.ADMIN_NUMBERS.includes(digits(sender));
+  const ctx = { sock, msg, content, from, sender, command: command.toLowerCase(), args, isAdmin };
+
+  if (route.admin && !isAdmin) {
+    return reply(ctx, "Command ini khusus admin.");
+  }
+  await route.run(ctx);
+}
+
+module.exports = { handleMessage };
