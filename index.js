@@ -11,17 +11,32 @@ const config = require("./config");
 const { fetchDownload, detectPlatform } = require("./downloaderApi");
 const rateLimiter = require("./rateLimiter");
 
-// Isi nomor WA bot di sini (format:6283834979782)
-// atau set via environment variable PHONE_NUMBER di Railway (Settings > Variables).
-// Kalau diisi, bot akan pakai kode pairing (lebih stabil di hosting cloud)
-// daripada QR code yang sering gagal kalau di-screenshot dari log.
-const PHONE_NUMBER = process.env.PHONE_NUMBER || "";
+// ISI NOMOR WA BOT DI BAWAH INI (format: 628xxxxxxxxxx, tanpa "+" dan tanpa spasi).
+// Contoh: const PHONE_NUMBER_MANUAL = "6281234567890";
+// Kalau kosong, bot coba baca dari Variables Railway bernama PHONE_NUMBER.
+const PHONE_NUMBER_MANUAL = "6283834979782";
+
+const PHONE_NUMBER = (process.env.PHONE_NUMBER || PHONE_NUMBER_MANUAL).replace(
+  /[^0-9]/g,
+  ""
+);
 
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState("./session");
   const { version } = await fetchLatestBaileysVersion();
 
   const usePairingCode = Boolean(PHONE_NUMBER) && !state.creds.registered;
+  let pairingRequested = false;
+
+  // Log diagnosis supaya jelas bot lagi pakai mode apa
+  console.log(
+    "[INFO] Mode login:",
+    usePairingCode
+      ? "PAIRING CODE (nomor: " + PHONE_NUMBER + ")"
+      : PHONE_NUMBER
+      ? "sudah terdaftar / sesi lama ada"
+      : "QR (PHONE_NUMBER kosong, isi dulu!)"
+  );
 
   const sock = makeWASocket({
     version,
@@ -30,29 +45,32 @@ async function startBot() {
     printQRInTerminal: false,
   });
 
-  if (usePairingCode) {
-    setTimeout(async () => {
-      try {
-        const code = await sock.requestPairingCode(PHONE_NUMBER);
-        console.log("=====================================");
-        console.log("KODE PAIRING KAMU:", code);
-        console.log("Buka WhatsApp > Perangkat Tertaut >");
-        console.log("Tautkan dengan nomor telepon > masukkan kode ini");
-        console.log("=====================================");
-      } catch (err) {
-        console.error("Gagal minta kode pairing:", err.message);
-      }
-    }, 3000);
-  }
-
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("connection.update", (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    if (qr && !usePairingCode) {
-      console.log("Scan QR berikut dengan WhatsApp:");
-      qrcode.generate(qr, { small: true });
+    if (qr) {
+      if (usePairingCode) {
+        if (!pairingRequested) {
+          pairingRequested = true;
+          sock
+            .requestPairingCode(PHONE_NUMBER)
+            .then((code) => {
+              console.log("=====================================");
+              console.log("KODE PAIRING KAMU: " + code);
+              console.log("WhatsApp > Perangkat Tertaut > Tautkan Perangkat");
+              console.log("> Tautkan dengan nomor telepon > masukkan kode");
+              console.log("=====================================");
+            })
+            .catch((err) =>
+              console.error("Gagal minta kode pairing:", err.message)
+            );
+        }
+      } else {
+        console.log("Scan QR berikut dengan WhatsApp:");
+        qrcode.generate(qr, { small: true });
+      }
     }
 
     if (connection === "close") {
