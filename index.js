@@ -11,7 +11,7 @@ const config = require("./config");
 const { fetchDownload, detectPlatform } = require("./downloaderApi");
 const rateLimiter = require("./rateLimiter");
 
-// Isi nomor WA bot di sini (format: 628xxxxxxxxxx, tanpa "+" tanpa spasi)
+// Isi nomor WA bot di sini (format:6283834979782)
 // atau set via environment variable PHONE_NUMBER di Railway (Settings > Variables).
 // Kalau diisi, bot akan pakai kode pairing (lebih stabil di hosting cloud)
 // daripada QR code yang sering gagal kalau di-screenshot dari log.
