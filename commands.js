@@ -1,5 +1,8 @@
 const { downloadMediaMessage } = require("@whiskeysockets/baileys");
 const pino = require("pino");
+const axios = require("axios");
+const QRCode = require("qrcode");
+const sharp = require("sharp");
 const config = require("./config");
 const api = require("./downloaderApi");
 const rateLimiter = require("./rateLimiter");
@@ -140,21 +143,41 @@ async function cmdMenu(ctx) {
     `${P}facebook <link>`,
     `${P}pinterest <link>`,
     `${P}spotify <link>`,
+    `${P}ytmp3 <link>`,
+    `${P}ytmp4 <link>`,
     "",
     "*Tools*",
-    `${P}upscale <2k|4k|8k>`,
-    "(kirim foto/video dengan caption itu, atau balas foto/video)",
+    `${P}upscale <2k|4k|8k>` + " (kirim/balas foto atau video)",
+    `${P}removebg` + " (kirim/balas foto)",
+    `${P}sticker` + " (kirim/balas foto)",
+    `${P}qr <teks>`,
+    `${P}shorten <link>`,
+    "",
+    "*Game*",
     `${P}fakeff <nama> | <uid> | <level>`,
     `${P}fakeml <nama> | <uid> | <level>`,
     "(uid dan level boleh dikosongkan)",
     "",
     "*Lainnya*",
     `${P}ping`,
+    `${P}quote`,
+    `${P}owner`,
+    `${P}tagall` + " (khusus grup)",
   ];
   if (ctx.isAdmin) {
     lines.push("", "*Admin*", `${P}status`, `${P}ban <nomor>`, `${P}unban <nomor>`);
   }
-  await reply(ctx, lines.join("\n"));
+  const text = lines.join("\n");
+
+  if (config.MENU_MEDIA_URL && config.MENU_MEDIA_TYPE) {
+    await rateLimiter.randomDelay();
+    const content =
+      config.MENU_MEDIA_TYPE === "video"
+        ? { video: { url: config.MENU_MEDIA_URL }, caption: text }
+        : { image: { url: config.MENU_MEDIA_URL }, caption: text };
+    return ctx.sock.sendMessage(ctx.from, content, { quoted: ctx.msg });
+  }
+  await reply(ctx, text);
 }
 
 async function cmdPing(ctx) {
@@ -238,6 +261,121 @@ async function cmdBan(ctx, ban) {
   await reply(ctx, ban ? `Nomor ${num} diblokir.` : `Blokir nomor ${num} dibuka.`);
 }
 
+async function cmdOwner(ctx) {
+  await reply(
+    ctx,
+    `*Owner Bot*\nNama: ${config.OWNER_NAME}\nNomor: wa.me/${config.OWNER_NUMBER}`
+  );
+}
+
+async function cmdSticker(ctx) {
+  const media = findMedia(ctx.msg, ctx.content);
+  if (!media || (media.kind !== "image" && media.kind !== "video")) {
+    return reply(ctx, `Kirim foto dengan caption ${P}sticker, atau balas foto dengan ${P}sticker.`);
+  }
+  if (media.kind === "video") {
+    return reply(ctx, "Stiker dari video belum didukung, kirim foto ya.");
+  }
+  await work(ctx, async () => {
+    const buffer = await downloadMediaMessage(
+      media.waMsg,
+      "buffer",
+      {},
+      { logger, reuploadRequest: ctx.sock.updateMediaMessage }
+    );
+    const webp = await sharp(buffer)
+      .resize(512, 512, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+      .webp()
+      .toBuffer();
+    await rateLimiter.randomDelay();
+    await ctx.sock.sendMessage(ctx.from, { sticker: webp }, { quoted: ctx.msg });
+  });
+}
+
+async function cmdQr(ctx) {
+  const text = ctx.args.join(" ");
+  if (!text) return reply(ctx, `Contoh: ${P}qr Halo dunia`);
+  await work(ctx, async () => {
+    const buffer = await QRCode.toBuffer(text, { width: 512, margin: 1 });
+    await rateLimiter.randomDelay();
+    await ctx.sock.sendMessage(
+      ctx.from,
+      { image: buffer, caption: "QR code kamu" },
+      { quoted: ctx.msg }
+    );
+  });
+}
+
+async function cmdShorten(ctx) {
+  const url = ctx.args[0];
+  if (!url || !/^https?:\/\//i.test(url)) {
+    return reply(ctx, `Contoh: ${P}shorten https://contoh.com/link-panjang`);
+  }
+  await work(ctx, async () => {
+    const res = await axios.get("https://is.gd/create.php", {
+      params: { format: "simple", url },
+      timeout: 15000,
+    });
+    const short = String(res.data).trim();
+    if (!short.startsWith("http")) throw new Error(short);
+    await reply(ctx, `Link pendek: ${short}`);
+  });
+}
+
+async function cmdQuote(ctx) {
+  await work(ctx, async () => {
+    const res = await axios.get("https://api.quotable.io/random", { timeout: 15000 });
+    await reply(ctx, `"${res.data.content}"\n— ${res.data.author}`);
+  });
+}
+
+async function cmdTagAll(ctx) {
+  if (!ctx.from.endsWith("@g.us")) return reply(ctx, "Command ini hanya untuk grup.");
+  await work(ctx, async () => {
+    const meta = await ctx.sock.groupMetadata(ctx.from);
+    const mentions = meta.participants.map((p) => p.id);
+    const text = ["*TAG SEMUA ANGGOTA*", ...mentions.map((m) => "@" + m.split("@")[0])].join("\n");
+    await rateLimiter.randomDelay();
+    await ctx.sock.sendMessage(ctx.from, { text, mentions }, { quoted: ctx.msg });
+  });
+}
+
+// Command generik untuk endpoint yang butuh path diisi dulu di config.js
+function notConfigured(endpointKey) {
+  return async (ctx) => reply(ctx, `Fitur ini belum tersedia — endpoint "${endpointKey}" belum diisi di config.js.`);
+}
+
+async function cmdYt(ctx, kind) {
+  const endpointKey = kind === "audio" ? "ytmp3" : "ytmp4";
+  if (!config.ENDPOINTS[endpointKey]) return notConfigured(endpointKey)(ctx);
+  const url = ctx.args[0];
+  if (!url) return reply(ctx, `Contoh: ${P}${ctx.command} https://youtu.be/xxxx`);
+  await work(ctx, async () => {
+    const result = await api.callApi(endpointKey, { params: { url }, timeout: 120000 });
+    await deliver(ctx, result, kind === "audio" ? "audio" : "video", "Selesai");
+  });
+}
+
+async function cmdRemoveBg(ctx) {
+  if (!config.ENDPOINTS.removeBg) return notConfigured("removeBg")(ctx);
+  const media = findMedia(ctx.msg, ctx.content);
+  if (!media || media.kind !== "image") {
+    return reply(ctx, `Kirim foto dengan caption ${P}removebg, atau balas foto dengan ${P}removebg.`);
+  }
+  await work(ctx, async () => {
+    const buffer = await downloadMediaMessage(
+      media.waMsg,
+      "buffer",
+      {},
+      { logger, reuploadRequest: ctx.sock.updateMediaMessage }
+    );
+    const form = new FormData();
+    form.append("file", new Blob([buffer], { type: media.mime }), "input.jpg");
+    const result = await api.callApi("removeBg", { method: "post", body: form, timeout: 60000 });
+    await deliver(ctx, result, "image", "Selesai");
+  });
+}
+
 // ---------- Daftar command ----------
 const routes = new Map();
 function add(names, run, opts = {}) {
@@ -253,6 +391,15 @@ add(["spotify", "sp"], (c) => runDownload(c, "spotify"));
 add(["upscale", "hd"], cmdUpscale);
 add(["fakeff", "ffl"], (c) => cmdFakeLobby(c, "ff"));
 add(["fakeml", "mll"], (c) => cmdFakeLobby(c, "ml"));
+add(["owner"], cmdOwner);
+add(["sticker", "stiker", "s"], cmdSticker);
+add(["qr"], cmdQr);
+add(["shorten", "short"], cmdShorten);
+add(["quote"], cmdQuote);
+add(["tagall"], cmdTagAll);
+add(["ytmp3"], (c) => cmdYt(c, "audio"));
+add(["ytmp4"], (c) => cmdYt(c, "video"));
+add(["removebg"], cmdRemoveBg);
 add(["status"], cmdStatus, { admin: true });
 add(["ban"], (c) => cmdBan(c, true), { admin: true });
 add(["unban"], (c) => cmdBan(c, false), { admin: true });

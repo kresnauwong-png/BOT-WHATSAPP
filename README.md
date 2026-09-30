@@ -14,9 +14,15 @@ Bot WhatsApp berbasis [Baileys](https://github.com/WhiskeySockets/Baileys) yang 
 
 - `.menu` — daftar command, `.ping` — cek bot aktif
 - `.tiktok` `.instagram` `.facebook` `.pinterest` `.spotify` + `<link>`
-- `.upscale <2k|4k|8k>` — kirim/balas foto atau video
+- `.upscale <2k|4k|8k>`, `.removebg`, `.sticker` — kirim/balas foto atau video
+- `.qr <teks>`, `.shorten <link>`, `.quote`, `.owner`, `.tagall` (khusus grup)
+- `.ytmp3 <link>`, `.ytmp4 <link>` — perlu endpoint diisi dulu di config.js
 - `.fakeff` / `.fakeml` — `<nama> | <uid> | <level>` (uid & level opsional)
 - Admin: `.status`, `.ban <nomor>`, `.unban <nomor>` (isi `ADMIN_NUMBERS` di config.js)
+
+## Foto/video pembuka di .menu
+Isi `MENU_MEDIA_TYPE` ("image" atau "video") dan `MENU_MEDIA_URL` di `config.js`
+(atau lewat Variables Railway) kalau sudah punya link videonya. Kalau dikosongkan, `.menu` tetap jalan sebagai teks biasa.
 
 Sesuaikan `downloaderApi.js` (path endpoint) dan bagian parsing hasil di `index.js` dengan bentuk response API asli kamu.
 

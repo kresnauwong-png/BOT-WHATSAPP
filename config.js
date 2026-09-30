@@ -26,10 +26,33 @@ module.exports = {
     upscale: "/api/upscale",
     fakeLobbyFF: "/api/fake-lobby/freefire",
     fakeLobbyML: "/api/fake-lobby/mobilelegends",
+    // Fitur baru di bawah ini BELUM ada di API kamu — isi path-nya kalau sudah dibuat.
+    // Sebelum diisi, command-command ini otomatis membalas "belum tersedia".
+    removeBg: "",
+    ytmp3: "",
+    ytmp4: "",
   },
 
-  // Batas ukuran file untuk upscale (MB)
+  // Batas ukuran file untuk upscale / hapus background (MB)
   MAX_UPLOAD_MB: 20,
+
+  // Foto/video pembuka yang ikut dikirim bersama .menu. Kosongkan (undefined)
+  // kalau belum punya videonya — nanti tinggal isi salah satu:
+  // MENU_MEDIA_TYPE: "video", MENU_MEDIA_URL: "https://link-video-kamu.mp4"
+  MENU_MEDIA_TYPE: process.env.MENU_MEDIA_TYPE || "", // "image" | "video" | ""
+  MENU_MEDIA_URL: process.env.MENU_MEDIA_URL || "",
+
+  // Ditampilkan di .owner
+  OWNER_NAME: process.env.OWNER_NAME || "Owner Bot",
+  OWNER_NUMBER: process.env.OWNER_NUMBER || "6285134217812",
+
+  // ===== AI Chat (.ai <pertanyaan>) =====
+  // Ambil API key gratis di https://console.anthropic.com lalu isi di
+  // Variables Railway dengan nama ANTHROPIC_API_KEY. Tanpa ini, .ai tidak jalan.
+  AI_API_KEY: process.env.ANTHROPIC_API_KEY || "",
+  AI_MODEL: process.env.AI_MODEL || "claude-haiku-4-5-20251001",
+  // Berapa pasang pesan terakhir yang diingat bot per chat (biar ada konteks)
+  AI_HISTORY_LIMIT: 6,
 
   // Maksimal foto yang dikirim sekaligus (misal album Pinterest / slide TikTok)
   MAX_IMAGES: 5,

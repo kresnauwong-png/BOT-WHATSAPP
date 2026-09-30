@@ -16,7 +16,7 @@ const { handleMessage } = require("./commands");
 // ISI NOMOR WA BOT DI BAWAH INI (format: 628xxxxxxxxxx, tanpa "+" dan tanpa spasi).
 // Contoh: const PHONE_NUMBER_MANUAL = "6281234567890";
 // Kalau kosong, bot coba baca dari Variables Railway bernama PHONE_NUMBER.
-const PHONE_NUMBER_MANUAL = "6283834979782";
+const PHONE_NUMBER_MANUAL = "6285134217812";
 
 const PHONE_NUMBER = (process.env.PHONE_NUMBER || PHONE_NUMBER_MANUAL).replace(
   /[^0-9]/g,
