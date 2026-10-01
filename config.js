@@ -39,12 +39,18 @@ module.exports = {
   // Foto/video pembuka yang ikut dikirim bersama .menu. Kosongkan (undefined)
   // kalau belum punya videonya — nanti tinggal isi salah satu:
   // MENU_MEDIA_TYPE: "video", MENU_MEDIA_URL: "https://link-video-kamu.mp4"
-  MENU_MEDIA_TYPE: process.env.MENU_MEDIA_TYPE || "", // "image" | "video" | ""
-  MENU_MEDIA_URL: process.env.MENU_MEDIA_URL || "",
+  MENU_MEDIA_TYPE: process.env.MENU_MEDIA_TYPE || "video", // "image" | "video" | ""
+  MENU_MEDIA_URL:
+    process.env.MENU_MEDIA_URL ||
+    "https://videotourl.com/videos/1790821301756-31cb1a1e-f8bf-4b62-af89-abd8fda98f49.mp4",
 
   // Ditampilkan di .owner
   OWNER_NAME: process.env.OWNER_NAME || "Owner Bot",
   OWNER_NUMBER: process.env.OWNER_NUMBER || "6285134217812",
+
+  // Model untuk fitur .ai — isi API key-nya HANYA lewat Railway Variables
+  // (ANTHROPIC_API_KEY), JANGAN ditulis langsung di file ini.
+  AI_MODEL: process.env.AI_MODEL || "claude-haiku-4-5-20251001",
 
   // ===== AI Chat (.ai <pertanyaan>) =====
   // Ambil API key gratis di https://console.anthropic.com lalu isi di

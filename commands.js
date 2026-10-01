@@ -6,11 +6,23 @@ const sharp = require("sharp");
 const config = require("./config");
 const api = require("./downloaderApi");
 const rateLimiter = require("./rateLimiter");
+const groupFeatures = require("./groupFeatures");
 
 const P = config.PREFIX;
 const startedAt = Date.now();
 const banned = new Set(); // nomor yang diblokir admin (hilang saat bot restart)
 const logger = pino({ level: "silent" });
+
+// Pengaturan per grup & riwayat chat AI (hilang kalau bot restart)
+const groupState = new Map(); // groupId -> { antilink: bool, welcome: bool }
+const aiHistory = new Map(); // chatId -> [{ role, content }, ...]
+
+function getGroupState(groupId) {
+  if (!groupState.has(groupId)) groupState.set(groupId, { antilink: false, welcome: false });
+  return groupState.get(groupId);
+}
+
+const URL_IN_TEXT_RE = /https?:\/\/|wa\.me\/|chat\.whatsapp\.com/i;
 
 const DEFAULT_TYPE = {
   tiktok: "video",
@@ -70,6 +82,21 @@ function findMedia(msg, content) {
     };
   }
   return null;
+}
+
+async function getParticipant(sock, groupId, jid) {
+  const meta = await sock.groupMetadata(groupId);
+  const num = digits(jid);
+  return meta.participants.find((p) => digits(p.id) === num);
+}
+
+async function isGroupAdmin(sock, groupId, jid) {
+  const p = await getParticipant(sock, groupId, jid);
+  return Boolean(p && (p.admin === "admin" || p.admin === "superadmin"));
+}
+
+async function isBotAdmin(sock, groupId) {
+  return isGroupAdmin(sock, groupId, sock.user.id);
 }
 
 async function reply(ctx, text) {
@@ -157,6 +184,16 @@ async function cmdMenu(ctx) {
     `${P}fakeff <nama> | <uid> | <level>`,
     `${P}fakeml <nama> | <uid> | <level>`,
     "(uid dan level boleh dikosongkan)",
+    "",
+    "*AI*",
+    `${P}ai <pertanyaan>`,
+    "",
+    "*Grup (khusus admin grup)*",
+    `${P}kick` + " (tag/balas orangnya)",
+    `${P}mute`,
+    `${P}unmute`,
+    `${P}antilink on|off`,
+    `${P}welcome on|off`,
     "",
     "*Lainnya*",
     `${P}ping`,
@@ -376,6 +413,252 @@ async function cmdRemoveBg(ctx) {
   });
 }
 
+async function cmdAi(ctx) {
+  const question = ctx.args.join(" ");
+  if (!question) return reply(ctx, `Contoh: ${P}ai jelaskan apa itu fotosintesis`);
+  if (!config.AI_API_KEY) {
+    return reply(
+      ctx,
+      "Fitur AI chat belum aktif. Isi ANTHROPIC_API_KEY di Variables Railway dulu (ambil di console.anthropic.com)."
+    );
+  }
+  await work(ctx, async () => {
+    const chatId = ctx.from;
+    const history = aiHistory.get(chatId) || [];
+    const messages = [...history, { role: "user", content: question }];
+
+    const res = await axios.post(
+      "https://api.anthropic.com/v1/messages",
+      {
+        model: config.AI_MODEL,
+        max_tokens: 1024,
+        messages,
+      },
+      {
+        headers: {
+          "x-api-key": config.AI_API_KEY,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+        timeout: 60000,
+      }
+    );
+
+    const answer = (res.data.content || [])
+      .map((b) => b.text || "")
+      .join("")
+      .trim() || "(tidak ada jawaban)";
+
+    const updated = [...messages, { role: "assistant", content: answer }].slice(
+      -config.AI_HISTORY_LIMIT * 2
+    );
+    aiHistory.set(chatId, updated);
+
+    await reply(ctx, answer);
+  });
+}
+
+async function cmdAiReset(ctx) {
+  aiHistory.delete(ctx.from);
+  await reply(ctx, "Riwayat obrolan AI di chat ini sudah dihapus.");
+}
+
+// ---------- Command grup ----------
+function requireGroup(ctx) {
+  return ctx.from.endsWith("@g.us");
+}
+
+async function requireGroupAdmin(ctx) {
+  if (!requireGroup(ctx)) {
+    await reply(ctx, "Command ini hanya untuk grup.");
+    return false;
+  }
+  const ok = ctx.isAdmin || (await isGroupAdmin(ctx.sock, ctx.from, ctx.sender));
+  if (!ok) await reply(ctx, "Command ini khusus admin grup.");
+  return ok;
+}
+
+async function cmdAntilink(ctx) {
+  if (!(await requireGroupAdmin(ctx))) return;
+  const mode = (ctx.args[0] || "").toLowerCase();
+  if (!["on", "off"].includes(mode)) return reply(ctx, `Contoh: ${P}antilink on`);
+  getGroupState(ctx.from).antilink = mode === "on";
+  await reply(ctx, `Antilink di grup ini: ${mode === "on" ? "AKTIF" : "MATI"}`);
+}
+
+async function cmdWelcome(ctx) {
+  if (!(await requireGroupAdmin(ctx))) return;
+  const mode = (ctx.args[0] || "").toLowerCase();
+  if (!["on", "off"].includes(mode)) return reply(ctx, `Contoh: ${P}welcome on`);
+  getGroupState(ctx.from).welcome = mode === "on";
+  await reply(ctx, `Pesan selamat datang di grup ini: ${mode === "on" ? "AKTIF" : "MATI"}`);
+}
+
+async function cmdMute(ctx, mute) {
+  if (!(await requireGroupAdmin(ctx))) return;
+  if (!(await isBotAdmin(ctx.sock, ctx.from))) {
+    return reply(ctx, "Bot harus jadi admin grup dulu untuk memakai command ini.");
+  }
+  await ctx.sock.groupSettingUpdate(ctx.from, mute ? "announcement" : "not_announcement");
+  await reply(ctx, mute ? "Grup dikunci, hanya admin yang bisa chat." : "Grup dibuka lagi untuk semua anggota.");
+}
+
+function extractTargets(ctx) {
+  const mentioned = ctx.content.extendedTextMessage?.contextInfo?.mentionedJid || [];
+  if (mentioned.length) return mentioned;
+  const quotedParticipant = ctx.content.extendedTextMessage?.contextInfo?.participant;
+  if (quotedParticipant) return [quotedParticipant];
+  const num = digits(ctx.args[0] || "");
+  return num ? [num + "@s.whatsapp.net"] : [];
+}
+
+async function cmdKick(ctx) {
+  if (!(await requireGroupAdmin(ctx))) return;
+  if (!(await isBotAdmin(ctx.sock, ctx.from))) {
+    return reply(ctx, "Bot harus jadi admin grup dulu untuk memakai command ini.");
+  }
+  const targets = extractTargets(ctx);
+  if (!targets.length) {
+    return reply(ctx, `Tandai/balas orangnya, atau: ${P}kick 6281234567890`);
+  }
+  await work(ctx, async () => {
+    await ctx.sock.groupParticipantsUpdate(ctx.from, targets, "remove");
+    await reply(ctx, "Berhasil mengeluarkan anggota.");
+  });
+}
+
+// Dipanggil dari index.js saat ada yang masuk/keluar grup
+async function handleGroupParticipantsUpdate(sock, update) {
+  const { id: groupId, participants, action } = update;
+  if (action !== "add") return;
+  const state = getGroupState(groupId);
+  if (!state.welcome) return;
+  try {
+    const meta = await sock.groupMetadata(groupId);
+    for (const jid of participants) {
+      await rateLimiter.randomDelay();
+      await sock.sendMessage(groupId, {
+        text: `Selamat datang @${jid.split("@")[0]} di grup *${meta.subject}*! 👋`,
+        mentions: [jid],
+      });
+    }
+  } catch (err) {
+    console.error("[ERROR] welcome message:", err.message);
+  }
+}
+
+// Dipanggil dari handleMessage untuk cek link sebelum command diproses
+async function checkAntilink(sock, msg, from, sender, text) {
+  if (!from.endsWith("@g.us")) return false;
+  const state = getGroupState(from);
+  if (!state.antilink) return false;
+  if (!URL_IN_TEXT_RE.test(text)) return false;
+  if (await isGroupAdmin(sock, from, sender)) return false;
+
+  try {
+    await sock.sendMessage(from, { delete: msg.key });
+    await rateLimiter.randomDelay();
+    await sock.sendMessage(from, {
+      text: `@${sender.split("@")[0]} link tidak diperbolehkan di grup ini.`,
+      mentions: [sender],
+    });
+  } catch (err) {
+    console.error("[ERROR] antilink:", err.message);
+  }
+  return true;
+}
+
+function getTargetUser(ctx) {
+  const mentioned = ctx.content.extendedTextMessage?.contextInfo?.mentionedJid;
+  if (mentioned && mentioned[0]) return mentioned[0];
+  const quotedParticipant = ctx.content.extendedTextMessage?.contextInfo?.participant;
+  if (quotedParticipant) return quotedParticipant;
+  return null;
+}
+
+async function requireGroupAdmin(ctx) {
+  if (!ctx.from.endsWith("@g.us")) {
+    await reply(ctx, "Command ini hanya untuk grup.");
+    return false;
+  }
+  const ok = await groupFeatures.isGroupAdmin(ctx.sock, ctx.from, ctx.sender);
+  if (!ok) {
+    await reply(ctx, "Command ini khusus admin grup.");
+    return false;
+  }
+  return true;
+}
+
+async function cmdKick(ctx) {
+  if (!(await requireGroupAdmin(ctx))) return;
+  const target = getTargetUser(ctx);
+  if (!target) return reply(ctx, `Tag orangnya atau balas pesannya, lalu ketik ${P}kick`);
+  await work(ctx, async () => {
+    await ctx.sock.groupParticipantsUpdate(ctx.from, [target], "remove");
+    await reply(ctx, "Berhasil dikeluarkan dari grup.");
+  });
+}
+
+async function cmdMute(ctx, mute) {
+  if (!(await requireGroupAdmin(ctx))) return;
+  await work(ctx, async () => {
+    await ctx.sock.groupSettingUpdate(ctx.from, mute ? "announcement" : "not_announcement");
+    await reply(ctx, mute ? "Grup dikunci, hanya admin yang bisa chat." : "Grup dibuka lagi untuk semua.");
+  });
+}
+
+async function cmdAntilink(ctx) {
+  if (!(await requireGroupAdmin(ctx))) return;
+  const mode = (ctx.args[0] || "").toLowerCase();
+  if (!["on", "off"].includes(mode)) return reply(ctx, `Contoh: ${P}antilink on atau ${P}antilink off`);
+  if (mode === "on") groupFeatures.antilinkGroups.add(ctx.from);
+  else groupFeatures.antilinkGroups.delete(ctx.from);
+  await reply(ctx, `Antilink ${mode === "on" ? "diaktifkan" : "dimatikan"} di grup ini.`);
+}
+
+async function cmdWelcome(ctx) {
+  if (!(await requireGroupAdmin(ctx))) return;
+  const mode = (ctx.args[0] || "").toLowerCase();
+  if (!["on", "off"].includes(mode)) return reply(ctx, `Contoh: ${P}welcome on atau ${P}welcome off`);
+  if (mode === "on") groupFeatures.welcomeOffGroups.delete(ctx.from);
+  else groupFeatures.welcomeOffGroups.add(ctx.from);
+  await reply(ctx, `Pesan welcome/goodbye ${mode === "on" ? "diaktifkan" : "dimatikan"} di grup ini.`);
+}
+
+async function cmdAi(ctx) {
+  const question = ctx.args.join(" ");
+  if (!question) return reply(ctx, `Contoh: ${P}ai Apa itu fotosintesis?`);
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return reply(
+      ctx,
+      "Fitur AI belum aktif. Admin bot perlu mengisi ANTHROPIC_API_KEY di Railway (Settings > Variables)."
+    );
+  }
+  await work(ctx, async () => {
+    const res = await axios.post(
+      "https://api.anthropic.com/v1/messages",
+      {
+        model: config.AI_MODEL,
+        max_tokens: 1024,
+        messages: [{ role: "user", content: question }],
+      },
+      {
+        headers: {
+          "x-api-key": process.env.ANTHROPIC_API_KEY,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+        timeout: 60000,
+      }
+    );
+    const answer = (res.data.content || [])
+      .map((b) => b.text || "")
+      .join("\n")
+      .trim();
+    await reply(ctx, answer || "Tidak ada jawaban dari AI.");
+  });
+}
+
 // ---------- Daftar command ----------
 const routes = new Map();
 function add(names, run, opts = {}) {
@@ -400,6 +683,19 @@ add(["tagall"], cmdTagAll);
 add(["ytmp3"], (c) => cmdYt(c, "audio"));
 add(["ytmp4"], (c) => cmdYt(c, "video"));
 add(["removebg"], cmdRemoveBg);
+add(["ai", "tanya"], cmdAi);
+add(["kick"], cmdKick);
+add(["mute"], (c) => cmdMute(c, true));
+add(["unmute"], (c) => cmdMute(c, false));
+add(["antilink"], cmdAntilink);
+add(["welcome"], cmdWelcome);
+add(["ai", "tanya"], cmdAi);
+add(["airesert", "aireset"], cmdAiReset);
+add(["antilink"], cmdAntilink);
+add(["welcome"], cmdWelcome);
+add(["mute", "lock"], (c) => cmdMute(c, true));
+add(["unmute", "unlock"], (c) => cmdMute(c, false));
+add(["kick"], cmdKick);
 add(["status"], cmdStatus, { admin: true });
 add(["ban"], (c) => cmdBan(c, true), { admin: true });
 add(["unban"], (c) => cmdBan(c, false), { admin: true });
@@ -414,6 +710,8 @@ async function handleMessage(sock, msg) {
   const sender = msg.key.participant || from;
 
   console.log("[DEBUG] dari:", sender, "| teks:", text.slice(0, 80));
+
+  if (await groupFeatures.handleAntilink(sock, msg, text)) return;
 
   if (!text.startsWith(P)) {
     console.log("[DEBUG] diabaikan: teks tidak diawali prefix", P);

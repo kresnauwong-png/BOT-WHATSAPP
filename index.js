@@ -12,6 +12,7 @@ const qrcode = require("qrcode-terminal");
 
 const config = require("./config");
 const { handleMessage } = require("./commands");
+const groupFeatures = require("./groupFeatures");
 
 // ISI NOMOR WA BOT DI BAWAH INI (format: 628xxxxxxxxxx, tanpa "+" dan tanpa spasi).
 // Contoh: const PHONE_NUMBER_MANUAL = "6281234567890";
@@ -138,6 +139,12 @@ async function startBot() {
     } else if (connection === "open") {
       console.log("[OK] Bot WhatsApp tersambung");
     }
+  });
+
+  sock.ev.on("group-participants.update", (update) => {
+    groupFeatures.handleParticipantsUpdate(sock, update).catch((err) =>
+      console.error("[ERROR] group-participants.update:", err.message)
+    );
   });
 
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
