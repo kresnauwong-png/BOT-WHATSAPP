@@ -44,8 +44,11 @@ module.exports = {
     process.env.MENU_MEDIA_URL ||
     "https://videotourl.com/videos/1790821301756-31cb1a1e-f8bf-4b62-af89-abd8fda98f49.mp4",
 
+  // Nama bot, tampil di .menu dan di nama perangkat WhatsApp
+  BOT_NAME: process.env.BOT_NAME || "MayurXApi",
+
   // Ditampilkan di .owner
-  OWNER_NAME: process.env.OWNER_NAME || "Owner Bot",
+  OWNER_NAME: process.env.OWNER_NAME || "MayurXApi",
   OWNER_NUMBER: process.env.OWNER_NUMBER || "6285134217812",
 
   // Model untuk fitur .ai — isi API key-nya HANYA lewat Railway Variables

@@ -83,7 +83,7 @@ async function startBot() {
     logger: pino({ level: "silent" }),
     printQRInTerminal: false,
     // Nama perangkat yang tampil di WhatsApp. Penting agar kode pairing diterima.
-    browser: Browsers.ubuntu("Chrome"),
+    browser: Browsers.ubuntu(config.BOT_NAME),
   });
 
   // Minta kode pairing. codeIssued ada di level modul (lihat atas), jadi

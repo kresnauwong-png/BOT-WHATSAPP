@@ -162,7 +162,7 @@ async function work(ctx, fn) {
 // ---------- Command ----------
 async function cmdMenu(ctx) {
   const lines = [
-    "*MENU BOT*",
+    `*MENU ${config.BOT_NAME}*`,
     "",
     "*Downloader*",
     `${P}tiktok <link>`,
