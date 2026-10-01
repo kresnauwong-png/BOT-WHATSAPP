@@ -52,6 +52,16 @@ function clearSession() {
 }
 
 async function startBot() {
+  // Set FORCE_CLEAR_SESSION=true di Railway Variables SEKALI untuk membersihkan
+  // total sesi lama yang mungkin tercampur (misal dari percobaan QR sebelumnya),
+  // lalu hapus lagi variable ini setelah berhasil tertaut supaya tidak
+  // membersihkan sesi terus-menerus di kemudian hari.
+  if (process.env.FORCE_CLEAR_SESSION === "true") {
+    console.log("[INFO] FORCE_CLEAR_SESSION aktif, membersihkan total sesi lama...");
+    clearSession();
+    codeIssued = false;
+  }
+
   const { state, saveCreds } = await useMultiFileAuthState("./session");
   const { version } = await fetchLatestBaileysVersion();
 
