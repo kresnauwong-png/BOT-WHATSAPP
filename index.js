@@ -32,6 +32,12 @@ const PHONE_NUMBER = (process.env.PHONE_NUMBER || PHONE_NUMBER_MANUAL).replace(
   ""
 );
 
+// Status ini SENGAJA di luar startBot(), supaya tidak ter-reset tiap kali
+// bot reconnect otomatis. Reconnect setelah minta kode itu NORMAL di Baileys;
+// yang tidak boleh adalah minta kode BARU setiap kali reconnect itu terjadi,
+// karena itu bikin kode sebelumnya langsung tidak berlaku sebelum sempat dipakai.
+let codeIssued = false;
+
 // Hapus isi folder session (bukan folder-nya, karena bisa jadi Volume Railway)
 function clearSession() {
   const dir = path.join(__dirname, "session");
@@ -50,8 +56,6 @@ async function startBot() {
   const { version } = await fetchLatestBaileysVersion();
 
   const usePairingCode = Boolean(PHONE_NUMBER) && !state.creds.registered;
-  let pairingRequested = false;
-  let pairingDone = false;
 
   // Log diagnosis supaya jelas bot lagi pakai mode apa
   console.log(
@@ -72,32 +76,23 @@ async function startBot() {
     browser: Browsers.ubuntu("Chrome"),
   });
 
-  // Minta kode pairing, dicoba ulang sampai 5x kalau gagal
+  // Minta kode pairing. codeIssued ada di level modul (lihat atas), jadi
+  // begitu 1 kode berhasil didapat, reconnect berikutnya TIDAK minta kode baru.
   async function requestCode(attempt = 1) {
-    if (pairingDone) return;
+    if (codeIssued) return;
     try {
       const code = await sock.requestPairingCode(PHONE_NUMBER);
-      pairingDone = true;
+      codeIssued = true;
       console.log("=====================================");
       console.log("KODE PAIRING KAMU: " + code);
-      console.log("WhatsApp > Perangkat Tertaut > Tautkan Perangkat");
+      console.log("Masukkan DALAM 60 DETIK ke WhatsApp:");
+      console.log("Setelan > Perangkat Tertaut > Tautkan Perangkat");
       console.log("> Tautkan dengan nomor telepon > masukkan kode");
       console.log("=====================================");
     } catch (err) {
       console.error("[WARN] Gagal minta kode pairing (percobaan " + attempt + "):", err.message);
-      if (attempt < 5) setTimeout(() => requestCode(attempt + 1), 5000);
+      if (attempt < 3) setTimeout(() => requestCode(attempt + 1), 4000);
     }
-  }
-
-  // Cadangan: kalau event QR tidak muncul, tetap coba minta kode setelah 10 detik
-  if (usePairingCode) {
-    setTimeout(() => {
-      if (!pairingRequested) {
-        console.log("[INFO] Event QR belum muncul, mencoba minta kode langsung...");
-        pairingRequested = true;
-        requestCode();
-      }
-    }, 10000);
   }
 
   sock.ev.on("creds.update", saveCreds);
@@ -114,10 +109,7 @@ async function startBot() {
 
     if (qr) {
       if (usePairingCode) {
-        if (!pairingRequested) {
-          pairingRequested = true;
-          requestCode();
-        }
+        requestCode();
       } else {
         console.log("Scan QR berikut dengan WhatsApp:");
         qrcode.generate(qr, { small: true });
@@ -142,6 +134,7 @@ async function startBot() {
       } else {
         console.log("[INFO] WhatsApp ter-logout. Membersihkan sesi dan minta kode pairing baru...");
         clearSession();
+        codeIssued = false;
         setTimeout(startBot, 3000);
       }
     } else if (connection === "open") {
