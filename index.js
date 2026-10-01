@@ -1,3 +1,11 @@
+// Polyfill: beberapa versi Node belum otomatis menyediakan Web Crypto API
+// secara global, padahal Baileys butuh ini. Tanpa ini muncul error
+// "crypto is not defined" dan bot gagal minta kode pairing / konek.
+const nodeCrypto = require("crypto");
+if (!globalThis.crypto) {
+  globalThis.crypto = nodeCrypto.webcrypto;
+}
+
 const {
   default: makeWASocket,
   useMultiFileAuthState,
