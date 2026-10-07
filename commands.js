@@ -178,6 +178,7 @@ async function cmdMenu(ctx) {
     `${P}removebg` + " (kirim/balas foto)",
     `${P}sticker` + " (kirim/balas foto)",
     `${P}qr <teks>`,
+    `${P}rvo` + " (balas foto/video sekali lihat)",
     `${P}shorten <link>`,
     "",
     "*Game*",
@@ -326,6 +327,36 @@ async function cmdSticker(ctx) {
       .toBuffer();
     await rateLimiter.randomDelay();
     await ctx.sock.sendMessage(ctx.from, { sticker: webp }, { quoted: ctx.msg });
+  });
+}
+
+// ---------- RVO (lihat foto/video sekali lihat) ----------
+async function cmdRvo(ctx) {
+  // unwrap() sudah buka viewOnceMessage, jadi cukup balas pesan view-once-nya
+  const media = findMedia(ctx.msg, ctx.content);
+  if (!media) {
+    return reply(ctx, `Balas foto/video "sekali lihat" dengan ${P}rvo untuk melihatnya di sini.`);
+  }
+  await work(ctx, async () => {
+    const buffer = await downloadMediaMessage(
+      media.waMsg,
+      "buffer",
+      {},
+      { logger, reuploadRequest: ctx.sock.updateMediaMessage }
+    );
+    if (media.kind === "video") {
+      await ctx.sock.sendMessage(
+        ctx.from,
+        { video: buffer, caption: "Video sekali lihat", mimetype: media.mime },
+        { quoted: ctx.msg }
+      );
+    } else {
+      await ctx.sock.sendMessage(
+        ctx.from,
+        { image: buffer, caption: "Foto sekali lihat", mimetype: media.mime },
+        { quoted: ctx.msg }
+      );
+    }
   });
 }
 
@@ -677,6 +708,7 @@ add(["fakeml", "mll"], (c) => cmdFakeLobby(c, "ml"));
 add(["owner"], cmdOwner);
 add(["sticker", "stiker", "s"], cmdSticker);
 add(["qr"], cmdQr);
+add(["rvo", "readviewonce", "once"], cmdRvo);
 add(["shorten", "short"], cmdShorten);
 add(["quote"], cmdQuote);
 add(["tagall"], cmdTagAll);
