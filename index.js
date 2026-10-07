@@ -17,6 +17,29 @@ const fs = require("fs");
 const path = require("path");
 const pino = require("pino");
 const qrcode = require("qrcode-terminal");
+const http = require("http");
+const QRCode = require("qrcode");
+
+// Server kecil khusus menampilkan QR sebagai gambar PNG di browser,
+// karena QR di log Railway sering tidak rapi / tidak bisa di-scan.
+let currentQr = "";
+http.createServer(async (req, res) => {
+  try {
+    if (!currentQr) {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end("<h2>QR belum tersedia, tunggu beberapa detik lalu refresh...</h2>");
+      return;
+    }
+    const buf = await QRCode.toBuffer(currentQr, { width: 512, margin: 2 });
+    res.writeHead(200, { "Content-Type": "image/png" });
+    res.end(buf);
+  } catch (e) {
+    res.writeHead(500, { "Content-Type": "text/plain" });
+    res.end("Error: " + e.message);
+  }
+}).listen(process.env.PORT || 3000, () => {
+  console.log("[INFO] QR bisa dilihat di URL publik Railway-mu (refresh sampai QR muncul)");
+});
 
 const config = require("./config");
 const { handleMessage } = require("./commands");
@@ -118,6 +141,7 @@ async function startBot() {
     );
 
     if (qr) {
+      currentQr = qr;
       if (usePairingCode) {
         requestCode();
       } else {
