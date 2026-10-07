@@ -18,7 +18,7 @@ const groupState = new Map(); // groupId -> { antilink: bool, welcome: bool }
 const aiHistory = new Map(); // chatId -> [{ role, content }, ...]
 
 function getGroupState(groupId) {
-  if (!groupState.has(groupId)) groupState.set(groupId, { antilink: false, welcome: false });
+  if (!groupState.has(groupId)) groupState.set(groupId, { antilink: false, welcome: false, antibadword: false });
   return groupState.get(groupId);
 }
 
@@ -177,6 +177,7 @@ async function cmdMenu(ctx) {
     `${P}upscale <2k|4k|8k>` + " (kirim/balas foto atau video)",
     `${P}removebg` + " (kirim/balas foto)",
     `${P}sticker` + " (kirim/balas foto)",
+    `${P}toimg` + " (balas stiker jadi foto)",
     `${P}qr <teks>`,
     `${P}rvo` + " (balas foto/video sekali lihat)",
     `${P}shorten <link>`,
@@ -194,6 +195,9 @@ async function cmdMenu(ctx) {
     `${P}mute`,
     `${P}unmute`,
     `${P}antilink on|off`,
+    `${P}antibadword on|off`,
+    `${P}hidetag <teks>`,
+    `${P}groupinfo`,
     `${P}welcome on|off`,
     "",
     "*Lainnya*",
@@ -709,6 +713,10 @@ add(["owner"], cmdOwner);
 add(["sticker", "stiker", "s"], cmdSticker);
 add(["qr"], cmdQr);
 add(["rvo", "readviewonce", "once"], cmdRvo);
+add(["antibadword"], cmdAntibadword);
+add(["hidetag", "ht"], cmdHidetag);
+add(["groupinfo", "gcinfo", "infogrup"], cmdGroupinfo);
+add(["toimg", "toimage"], cmdToimg);
 add(["shorten", "short"], cmdShorten);
 add(["quote"], cmdQuote);
 add(["tagall"], cmdTagAll);
@@ -732,6 +740,101 @@ add(["status"], cmdStatus, { admin: true });
 add(["ban"], (c) => cmdBan(c, true), { admin: true });
 add(["unban"], (c) => cmdBan(c, false), { admin: true });
 
+
+// ---------- Fitur tambahan ----------
+const BADWORDS = /\b(anjing|bangsat|babi|kontol|memek|goblok|tolol|brengsek|tai|anjrit|asw|jancok|ngentot)\b/i;
+
+async function checkAntibadword(sock, msg, from, sender, text) {
+  if (!from.endsWith("@g.us")) return false;
+  const state = getGroupState(from);
+  if (!state.antibadword) return false;
+  if (!BADWORDS.test(text)) return false;
+  if (await isGroupAdmin(sock, from, sender)) return false;
+  try {
+    await sock.sendMessage(from, { delete: msg.key });
+    await rateLimiter.randomDelay();
+    await sock.sendMessage(from, {
+      text: `@${sender.split("@")[0]} kata kasar tidak diperbolehkan di grup ini.`,
+      mentions: [sender],
+    });
+  } catch (err) {
+    console.error("[ERROR] antibadword:", err.message);
+  }
+  return true;
+}
+
+async function cmdAntibadword(ctx) {
+  if (!(await requireGroupAdmin(ctx))) return;
+  const mode = (ctx.args[0] || "").toLowerCase();
+  if (!["on", "off"].includes(mode)) return reply(ctx, `Contoh: ${P}antibadword on`);
+  getGroupState(ctx.from).antibadword = mode === "on";
+  await reply(ctx, `Filter kata kasar di grup ini: ${mode === "on" ? "AKTIF" : "MATI"}`);
+}
+
+async function cmdHidetag(ctx) {
+  if (!(await requireGroupAdmin(ctx))) return;
+  const text = ctx.args.join(" ").trim();
+  if (!text) return reply(ctx, `Contoh: ${P}hidetag Pengumuman penting!`);
+  await work(ctx, async () => {
+    const meta = await ctx.sock.groupMetadata(ctx.from);
+    const jids = meta.participants.map((p) => p.id);
+    await ctx.sock.sendMessage(ctx.from, { text, mentions: jids }, { quoted: ctx.msg });
+  });
+}
+
+async function cmdGroupinfo(ctx) {
+  if (!ctx.from.endsWith("@g.us")) return reply(ctx, "Command ini hanya untuk grup.");
+  await work(ctx, async () => {
+    const meta = await ctx.sock.groupMetadata(ctx.from);
+    const admins = meta.participants.filter((p) => p.admin).length;
+    const created = new Date(meta.creation * 1000).toLocaleDateString("id-ID");
+    await reply(
+      ctx,
+      [
+        `*INFO GRUP*`,
+        `Nama: ${meta.subject}`,
+        `ID: ${meta.id}`,
+        `Anggota: ${meta.participants.length}`,
+        `Admin: ${admins}`,
+        `Dibuat: ${created}`,
+        `Deskripsi: ${meta.desc || "-"}`,
+      ].join("\n")
+    );
+  });
+}
+
+function findSticker(msg, content) {
+  const own = content.stickerMessage;
+  if (own) return { waMsg: { key: msg.key, message: content } };
+  const ctxInfo = content.extendedTextMessage?.contextInfo;
+  const quoted = unwrap(ctxInfo?.quotedMessage);
+  if (quoted?.stickerMessage) {
+    return {
+      waMsg: {
+        key: { remoteJid: msg.key.remoteJid, id: ctxInfo.stanzaId, participant: ctxInfo.participant },
+        message: quoted,
+      },
+    };
+  }
+  return null;
+}
+
+async function cmdToimg(ctx) {
+  const sticker = findSticker(ctx.msg, ctx.content);
+  if (!sticker) return reply(ctx, `Balas stiker dengan ${P}toimg untuk mengubahnya jadi foto.`);
+  await work(ctx, async () => {
+    const buffer = await downloadMediaMessage(
+      sticker.waMsg,
+      "buffer",
+      {},
+      { logger, reuploadRequest: ctx.sock.updateMediaMessage }
+    );
+    const img = await sharp(buffer).png().toBuffer();
+    await rateLimiter.randomDelay();
+    await ctx.sock.sendMessage(ctx.from, { image: img, caption: "Sudah jadi foto" }, { quoted: ctx.msg });
+  });
+}
+
 // ---------- Pintu masuk ----------
 async function handleMessage(sock, msg) {
   const from = msg.key.remoteJid;
@@ -744,6 +847,8 @@ async function handleMessage(sock, msg) {
   console.log("[DEBUG] dari:", sender, "| teks:", text.slice(0, 80));
 
   if (await groupFeatures.handleAntilink(sock, msg, text)) return;
+
+  if (await checkAntibadword(sock, msg, from, sender, text)) return;
 
   if (!text.startsWith(P)) {
     console.log("[DEBUG] diabaikan: teks tidak diawali prefix", P);
